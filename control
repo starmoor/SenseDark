@@ -1,0 +1,9 @@
+Package: com.starmoor.sensedark
+Name: SenseDark
+Version: 0.1.0-37
+Architecture: iphoneos-arm64e
+Description: Switch system dark mode automatically based on ambient light sensor（中文名：光感深色）
+Maintainer: starmoor
+Author: starmoor
+Section: Tweaks
+Depends: mobilesubstrate, preferenceloader
