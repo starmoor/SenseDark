@@ -1,0 +1,3 @@
+"GUIDE_TITLE" = "Guide";
+"GUIDE_FOOTER" = "SenseDark is integrated into the native Appearance settings.\n\nGo to Settings → Display & Brightness, enable Automatic, tap Options, and select Ambient Light to configure light/dark thresholds, switch delay, sampling interval, and manual override.";
+"OPEN_DISPLAY_BUTTON" = "Open Display & Brightness";

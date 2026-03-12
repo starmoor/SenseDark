@@ -1,0 +1,53 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install -q ldid dpkg
+
+      - name: Setup Theos (roothide fork; also provides the rootless scheme)
+        run: |
+          git clone --recursive --depth 1 https://github.com/roothide/theos.git "$HOME/theos"
+          rm -rf "$HOME/theos/sdks"
+          git clone --depth 1 https://github.com/theos/sdks.git "$HOME/theos/sdks"
+
+      - name: Build roothide package
+        run: |
+          export THEOS="$HOME/theos"
+          make clean
+          make package THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1
+          mkdir -p dist
+          deb=$(ls -t packages/*.deb | head -1)
+          cp "$deb" "dist/$(basename "$deb" .deb)_roothide.deb"
+
+      - name: Build rootless package
+        run: |
+          export THEOS="$HOME/theos"
+          make clean
+          make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
+          deb=$(ls -t packages/*.deb | head -1)
+          cp "$deb" "dist/$(basename "$deb" .deb)_rootless.deb"
+
+      - name: List built packages
+        run: ls -lh dist/
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb
+          generate_release_notes: true
