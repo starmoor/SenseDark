@@ -18,7 +18,7 @@ The core pipeline (ALS subscription, hysteresis, manual-switch pause, switching 
 
 ## Install
 
-roothide Bootstrap / roothide Dopamine (arm64e package). Install the `.deb` with Sileo or `dpkg -i` and respring. Requires roothide builds of mobilesubstrate (ElleKit) and PreferenceLoader.
+Add `https://repo.rusti.cc/ios/` in Sileo or Zebra — the source lists `SenseDark (roothide)` and `SenseDark (rootless)`, pick the one matching your jailbreak. Or download the `.deb` from the releases page and install with `dpkg -i`. Requires mobilesubstrate (ElleKit) and PreferenceLoader.
 
 ## Build
 
@@ -65,4 +65,4 @@ Both `SD_DIAG` switches default to 0; set them to 1 to turn on the diagnostics c
 - 灭屏停采样，解锁恢复
 - 核心管线（ALS 订阅、滞回、手动暂停、切换原语）参考 skittyblock/LightsOut（GPLv3），选项页集成和其余实现全部原创
 
-在 iOS 17.2（roothide Bootstrap）上实测开发。支持 roothide 与 rootless 两种打包 scheme（roothide 实测，rootless 由 CI 构建但未上机）；CI 在推送 `v*` 标签时自动出两种包并发 GitHub Release。
+Sileo / Zebra 添加源 `https://repo.rusti.cc/ios/`——源内并列 `SenseDark (roothide)` 与 `SenseDark (rootless)` 两个包，按越狱类型装对应的；或从 GitHub Releases 下载 deb 手动安装。在 iOS 17.2（roothide Bootstrap）上实测开发。支持 roothide 与 rootless 两种打包 scheme（roothide 实测，rootless 由 CI 构建但未上机）；CI 在推送 `v*` 标签时自动出两种包并发 GitHub Release。

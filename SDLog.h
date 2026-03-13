@@ -15,7 +15,7 @@
 #define SD_DIAG 0
 #endif
 
-#define SD_VERSION "0.1.0-37"
+#define SD_VERSION "0.1.0-39"
 
 #if SD_DIAG
 
@@ -44,7 +44,7 @@
 #endif
 
 #ifndef SDLOG_SOCKET_HOST
-#define SDLOG_SOCKET_HOST "192.168.2.22"
+#define SDLOG_SOCKET_HOST "127.0.0.1" // 调试时命令行 -DSDLOG_SOCKET_HOST=... 覆盖；默认值不带真实内网地址
 #endif
 
 static int SDLogSeq;
