@@ -16,6 +16,18 @@ The configuration lives right in the native appearance settings: **Settings → 
 
 The core pipeline (ALS subscription, hysteresis, manual-switch pause, switching via `UISUserInterfaceStyleMode`) follows skittyblock/LightsOut (GPLv3). The Options-page integration, coexistence with the system schedule, debounce, live readout and roothide support are written from scratch.
 
+## Memory footprint
+
+Nothing runs as its own process. The three binaries are mapped into processes that already exist, and the cost is a few pages each (16 KB pages, measured with `otool` on the release build 0.1.0-39):
+
+| Binary | Host process | Dirty (`__DATA` + `__DATA_CONST`) | Clean, file-backed (`__TEXT`, `__LINKEDIT`) |
+| --- | --- | --- | --- |
+| `SenseDark.dylib` | SpringBoard, always | 2 pages = 32 KB | 3 pages = 48 KB |
+| `SenseDarkSettings.dylib` | Settings, only while it runs | 2 pages = 32 KB | 4 pages = 64 KB |
+| `SenseDarkPrefs` | Settings, loaded by PreferenceLoader when the pane is opened | 2 pages = 32 KB | 3 pages = 48 KB |
+
+The binaries use chained fixups, so `__DATA_CONST` is written by dyld at load time and counted as dirty. Only the dirty column has to stay in RAM; the clean columns are read-only mappings of the file on disk and the system drops and re-reads them freely. The always-resident part is therefore 32 KB of dirty pages plus 48 KB of file mappings inside SpringBoard. On top of the mapped pages the SpringBoard side keeps a handful of runtime objects alive (the HID client, debounce timers, notification observers); iOS offers no way to measure one dylib's heap from outside a process, so this is an estimate rather than a measurement, of the order of tens of KB. On-disk sizes are 165 / 199 / 164 KB per binary, code signature included.
+
 ## Install
 
 Add `https://repo.rusti.cc/ios/` in Sileo or Zebra — the source lists `SenseDark (roothide)` and `SenseDark (rootless)`, pick the one matching your jailbreak. Or download the `.deb` from the releases page and install with `dpkg -i`. Requires mobilesubstrate (ElleKit) and PreferenceLoader.
@@ -65,4 +77,12 @@ Both `SD_DIAG` switches default to 0; set them to 1 to turn on the diagnostics c
 - 灭屏停采样，解锁恢复
 - 核心管线（ALS 订阅、滞回、手动暂停、切换原语）参考 skittyblock/LightsOut（GPLv3），选项页集成和其余实现全部原创
 
+内存占用：插件不新建进程，三个二进制分别映射进 SpringBoard（常驻）、设置 App（运行时）和 PreferenceLoader 按需加载的指引页。按发布包 0.1.0-39 的段表实测（16KB 页）：每个 Mach-O 的脏页（`__DATA`+`__DATA_CONST`）都只有 2 页共 32KB，代码段是磁盘文件的只读映射，内存吃紧时系统直接丢弃、用到再读回。真正常驻的只有 SpringBoard 里的 32KB 脏页加 48KB 文件映射。运行期的零散对象（HID 客户端、防抖定时器、通知观察者）在 iOS 上没有工具能从进程外测到单个 dylib 的堆，只能给量级估计：几十 KB。
+
 Sileo / Zebra 添加源 `https://repo.rusti.cc/ios/`——源内并列 `SenseDark (roothide)` 与 `SenseDark (rootless)` 两个包，按越狱类型装对应的；或从 GitHub Releases 下载 deb 手动安装。在 iOS 17.2（roothide Bootstrap）上实测开发。支持 roothide 与 rootless 两种打包 scheme（roothide 实测，rootless 由 CI 构建但未上机）；CI 在推送 `v*` 标签时自动出两种包并发 GitHub Release。
+
+---
+
+## Screenshot / 示例截图
+
+<p><img src="docs/screenshot-1.jpg" width="320" alt="Display &amp; Brightness → Automatic → Options with the Ambient Light row selected, live lux readout and threshold sliders"> <img src="docs/screenshot-2.jpg" width="320" alt="The switch delay, sampling interval, low-power strategy and manual-switch pause rows"></p>
