@@ -75,6 +75,16 @@ static void SDALSStop(void)
     SDALSRunning = NO;
 }
 
+// 切离环境光模式或关闭总开关时调用：释放 IOHIDEventSystemClient，彻底归零 HID 客户端内存
+static void SDALSDestroy(void)
+{
+    SDALSStop();
+    if (SDALSClient) {
+        CFRelease((CFTypeRef)SDALSClient);
+        SDALSClient = NULL;
+    }
+}
+
 // 建/复用 client → 按 usage 匹配 ALS → 设 ReportInterval(µs) → 挂主 runloop 收事件
 static BOOL SDALSStart(uint32_t intervalUs, SDALSEventCallback cb)
 {
