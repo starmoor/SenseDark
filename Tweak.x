@@ -43,6 +43,11 @@ static BOOL gPausedByManual; // 用户手动切过 → 暂停自动
 static BOOL gScreenOff;      // 灭屏 → 停传感器
 static BOOL gLowPowerMode;   // 系统低电量模式
 static BOOL gSwitching;      // 自己发起的切换（区分手动）
+static BOOL gInCCManualToggle; // 正在执行控制中心深色按钮切换
+static BOOL gCCTargetDark;     // 控制中心目标外观（YES=深色 NO=浅色）
+static double gLastCCStyleChangeAt; // 最近一次控制中心切换时间戳（覆盖异步横幅窗口）
+static BOOL gLastCCStyleTargetDark;
+static double gLastCCBannerAt; // 最近一次深色模式横幅时间戳（避免重复补发）
 static int gRunningInterval; // 当前 ALS 实际生效采样间隔（秒），0=未运行
 
 #if SD_DIAG
@@ -402,8 +407,19 @@ static void DisplayNote(CFNotificationCenterRef c, void *o, CFStringRef n,
 
 #pragma mark - hooks
 
+static BOOL IsControlCenterVisible(void)
+{
+    Class ccCls = objc_getClass("SBControlCenterController");
+    if (!ccCls || ![ccCls respondsToSelector:@selector(sharedInstanceIfExists)]) return NO;
+    id cc = ((id (*)(Class, SEL))objc_msgSend)(ccCls, @selector(sharedInstanceIfExists));
+    if (cc && [cc respondsToSelector:@selector(isVisible)]) {
+        return ((BOOL (*)(id, SEL))objc_msgSend)(cc, @selector(isVisible));
+    }
+    return NO;
+}
+
 // 用户的 CC/设置手动切换也会走这里。手动翻转在任何模式（含环境光接管）都暂停
-// 自动切换（否则环境光几秒内把用户手动选的深浅色翻回来）；解锁/重选环境光时恢复。
+// 自动切换（否则环境光几秒内把用户手动选的深浅色翻回来）；解锁/重选环境光/点「立即恢复」时恢复。
 %hook UISUserInterfaceStyleMode
 - (void)setModeValue:(long long)value
 {
@@ -412,6 +428,7 @@ static void DisplayNote(CFNotificationCenterRef c, void *o, CFStringRef n,
         gSwitching = NO;
     } else if ((value == 1 || value == 2) && gPauseOnManual && gEnabled && !gPausedByManual && AmbientActive()) {
         gPausedByManual = YES;
+        PublishRuntimeState();
         PingFmt("sd-manual-pause?set=%lld", value);
     }
 }
@@ -419,8 +436,10 @@ static void DisplayNote(CFNotificationCenterRef c, void *o, CFStringRef n,
 
 // 原生“自动”模式（modeValue 100/102）下的外观切换走 setOverride:
 //   - 我们自己 ALS 发起（gSwitching==YES）：直接放行
-//   - 系统日落/日出定时器清空 override（ov.style==0）：环境光接管时拦截，防与系统调度打架
-//   - 用户手动点浅色/深色（ov.style==1/2）：放行并暂停环境光，直到下次解锁恢复
+//   - 用户通过控制中心切回默认外观（ov.style==0 且处于控制中心操作）：必须放行（否则控制中心只能单向切深色），
+//     并按设置暂停自动切换
+//   - 后台系统日落/日出定时器清空 override（ov.style==0 且非控制中心操作）：环境光接管时拦截，防与系统调度打架
+//   - 用户手动点浅色/深色（ov.style==1/2）：放行并暂停环境光，直到下次解锁或点「立即恢复」
 static void H_setOverride(id self, SEL _cmd, SDStyleOverride ov)
 {
     if (gSwitching) {
@@ -428,15 +447,187 @@ static void H_setOverride(id self, SEL _cmd, SDStyleOverride ov)
         gSwitching = NO;
         return;
     }
-    if (gScheduleMode == 3 && gEnabled && ov.style == 0) {
+    BOOL fromCC = gInCCManualToggle || IsControlCenterVisible();
+    if (gScheduleMode == 3 && gEnabled && ov.style == 0 && !fromCC) {
         PingFmt("sd-supp-clear-ov?t=%lld", ov.timing);
         return;
     }
     ((void (*)(id, SEL, SDStyleOverride))o_setOverride)(self, _cmd, ov);
-    if ((ov.style == 1 || ov.style == 2) && gPauseOnManual && gEnabled && !gPausedByManual && AmbientActive()) {
-        gPausedByManual = YES;
-        PingFmt("sd-manual-pause-ov?s=%lld&t=%lld", ov.style, ov.timing);
+    if (fromCC) {
+        gLastCCStyleChangeAt = MonotonicNow();
+        if (gInCCManualToggle) {
+            gLastCCStyleTargetDark = gCCTargetDark;
+        } else if (ov.style == 2) {
+            gLastCCStyleTargetDark = YES;
+        } else if (ov.style == 1) {
+            gLastCCStyleTargetDark = NO;
+        } else {
+            // ov.style == 0 为取消覆盖切回相反外观，此时 UIKit trait 尚未异步刷新，取反当前态才是目标态
+            gLastCCStyleTargetDark = !IsDarkNow();
+        }
     }
+    if ((ov.style == 1 || ov.style == 2 || (ov.style == 0 && fromCC)) &&
+        gPauseOnManual && gEnabled && !gPausedByManual && AmbientActive()) {
+        gPausedByManual = YES;
+        PublishRuntimeState();
+        PingFmt("sd-manual-pause-ov?s=%lld&t=%lld&cc=%d", ov.style, ov.timing, fromCC);
+    }
+}
+
+// 控制中心深色模式按钮（Apple 原生 AppearanceModule / ControlCenterUIKit，不依赖 CCSupport，类缺失自动降级）：
+//   1. 标记 gInCCManualToggle + 时间窗，确保双向切换（含 setOverride:{0,0}）100% 放行；
+//   2. 拦截顶部状态横幅（同步与异步回调均覆盖），用 AppearanceModule.bundle 原生 MANUAL 文案
+//      替换「深色模式：7:00前保持打开」/「日出前保持打开」等定时提示。
+static IMP o_ccSetSelected, o_ccStatusUpdate;
+
+// 按需缓存 AppearanceModule.bundle 原生短文案，避免每次横幅都加载庞大的 Localizable.loctable
+static NSString *gCCDarkManual, *gCCLightManual, *gCCPrefix, *gCCDarkToken, *gCCLightToken;
+static BOOL gCCStringsLoaded;
+
+static void InvalidateCCStringsCache(void)
+{
+    gCCStringsLoaded = NO;
+    gCCDarkManual = nil;
+    gCCLightManual = nil;
+    gCCPrefix = nil;
+    gCCDarkToken = nil;
+    gCCLightToken = nil;
+}
+
+static BOOL EnsureCCAppearanceStrings(void)
+{
+    if (gCCStringsLoaded) return (gCCDarkManual.length > 0 && gCCLightManual.length > 0);
+    gCCStringsLoaded = YES;
+    @autoreleasepool {
+        Class ccCls = objc_getClass("CCUIAppearanceModule");
+        NSBundle *b = ccCls ? [NSBundle bundleForClass:ccCls] : nil;
+        if (!b) {
+            b = [NSBundle bundleWithPath:@"/System/Library/ControlCenter/Bundles/AppearanceModule.bundle"];
+        }
+        if (!b) return NO;
+
+        NSString *dm = [b localizedStringForKey:@"CONTROL_CENTER_STATUS_STYLE_MODE_DARK_MANUAL" value:nil table:nil];
+        NSString *lm = [b localizedStringForKey:@"CONTROL_CENTER_STATUS_STYLE_MODE_LIGHT_MANUAL" value:nil table:nil];
+        if (!dm.length || !lm.length || [dm isEqualToString:@"CONTROL_CENTER_STATUS_STYLE_MODE_DARK_MANUAL"]) {
+            return NO;
+        }
+        gCCDarkManual = [dm copy];
+        gCCLightManual = [lm copy];
+
+        NSRange r = [dm rangeOfString:@"："];
+        if (r.location == NSNotFound) r = [dm rangeOfString:@":"];
+        if (r.location != NSNotFound) {
+            gCCPrefix = [[dm substringToIndex:r.location + r.length] copy];
+            NSCharacterSet *ws = [NSCharacterSet whitespaceCharacterSet];
+            gCCDarkToken = [[[dm substringFromIndex:gCCPrefix.length] stringByTrimmingCharactersInSet:ws] copy];
+            if (lm.length >= gCCPrefix.length) {
+                gCCLightToken = [[[lm substringFromIndex:gCCPrefix.length] stringByTrimmingCharactersInSet:ws] copy];
+            }
+        }
+    }
+    return YES;
+}
+
+static void H_ccSetSelected(id self, SEL _cmd, BOOL selected)
+{
+    double toggleAt = MonotonicNow();
+    gInCCManualToggle = YES;
+    gCCTargetDark = selected;
+    gLastCCStyleChangeAt = toggleAt;
+    gLastCCStyleTargetDark = selected;
+    ((void (*)(id, SEL, BOOL))o_ccSetSelected)(self, _cmd, selected);
+    gInCCManualToggle = NO;
+
+    if (!AmbientActive()) return;
+
+    // 原生“自动”模式下取消 override（例如白天关闭深色模式）时，系统可能不发关闭横幅；
+    // 短延迟确认若系统未弹横幅，则用原生 AppearanceModule 文案补发一次。
+    __weak id weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(80 * NSEC_PER_MSEC)),
+                   dispatch_get_main_queue(), ^{
+        if (!AmbientActive() || gLastCCBannerAt >= toggleAt || gLastCCStyleChangeAt > toggleAt + 1e-6) return;
+        id strongSelf = weakSelf;
+        if (!strongSelf || ![strongSelf respondsToSelector:@selector(contentModuleContext)]) return;
+        id ctx = ((id (*)(id, SEL))objc_msgSend)(strongSelf, @selector(contentModuleContext));
+        if (!ctx || ![ctx respondsToSelector:@selector(enqueueStatusUpdate:)]) return;
+        if (!EnsureCCAppearanceStrings()) return;
+        NSString *text = selected ? gCCDarkManual : gCCLightManual;
+        Class suCls = objc_getClass("CCUIStatusUpdate");
+        if (!suCls || ![suCls respondsToSelector:@selector(statusUpdateWithMessage:type:)]) return;
+        id su = ((id (*)(Class, SEL, id, unsigned long long))objc_msgSend)(
+            suCls, @selector(statusUpdateWithMessage:type:), text, 0ULL);
+        if (su) {
+            ((void (*)(id, SEL, id))objc_msgSend)(ctx, @selector(enqueueStatusUpdate:), su);
+        }
+    });
+}
+
+static NSString *SanitizeCCAppearanceBanner(NSString *msg)
+{
+    if (!msg.length || !AmbientActive() || !EnsureCCAppearanceStrings()) return msg;
+
+    // 已经是纯净的手动文案则直接放行并记录已弹横幅
+    if ([msg isEqualToString:gCCDarkManual] || [msg isEqualToString:gCCLightManual]) {
+        gLastCCBannerAt = MonotonicNow();
+        return msg;
+    }
+
+    // 只替换深色模式横幅（前缀如 "深色模式：" / "Dark Mode:" / "Темный режим:"），绝不误伤夜览等其他模块
+    if (!gCCPrefix.length || ![msg hasPrefix:gCCPrefix]) return msg;
+
+    gLastCCBannerAt = MonotonicNow();
+
+    // 判定目标是深色还是浅色：同步切换用 gCCTargetDark；否则优先按文案中的开/关关键字判定，再兜底最近一次控制中心目标态
+    BOOL wantDark;
+    if (gInCCManualToggle) {
+        wantDark = gCCTargetDark;
+    } else {
+        BOOL hasDark = (gCCDarkToken.length > 0 && [msg rangeOfString:gCCDarkToken].location != NSNotFound);
+        BOOL hasLight = (gCCLightToken.length > 0 && [msg rangeOfString:gCCLightToken].location != NSNotFound);
+        if (hasDark && !hasLight) {
+            wantDark = YES;
+        } else if (hasLight && !hasDark) {
+            wantDark = NO;
+        } else if (MonotonicNow() - gLastCCStyleChangeAt < 2.0) {
+            wantDark = gLastCCStyleTargetDark;
+        } else {
+            wantDark = IsDarkNow();
+        }
+    }
+    return wantDark ? gCCDarkManual : gCCLightManual;
+}
+
+static id H_ccStatusUpdate(id self, SEL _cmd, NSString *msg, unsigned long long type)
+{
+    msg = SanitizeCCAppearanceBanner(msg);
+    return ((id (*)(id, SEL, id, unsigned long long))o_ccStatusUpdate)(self, _cmd, msg, type);
+}
+
+static IMP o_ccStatusMessage;
+static id H_ccStatusMessage(id self, SEL _cmd)
+{
+    NSString *msg = ((id (*)(id, SEL))o_ccStatusMessage)(self, _cmd);
+    return SanitizeCCAppearanceBanner(msg);
+}
+
+static BOOL HookControlCenterAppearance(void)
+{
+    if (!o_ccSetSelected) {
+        Class ccCls = objc_getClass("CCUIAppearanceModule");
+        if (ccCls && class_getInstanceMethod(ccCls, @selector(setSelected:))) {
+            MSHookMessageEx(ccCls, @selector(setSelected:), (IMP)H_ccSetSelected, &o_ccSetSelected);
+        }
+    }
+    if (!o_ccStatusUpdate && !o_ccStatusMessage) {
+        Class suCls = objc_getClass("CCUIStatusUpdate");
+        Class meta = suCls ? object_getClass(suCls) : Nil;
+        if (meta && class_getInstanceMethod(meta, @selector(statusUpdateWithMessage:type:))) {
+            MSHookMessageEx(meta, @selector(statusUpdateWithMessage:type:), (IMP)H_ccStatusUpdate, &o_ccStatusUpdate);
+        } else if (suCls && class_getInstanceMethod(suCls, @selector(message))) {
+            MSHookMessageEx(suCls, @selector(message), (IMP)H_ccStatusMessage, &o_ccStatusMessage);
+        }
+    }
+    return (o_ccSetSelected != NULL && (o_ccStatusUpdate != NULL || o_ccStatusMessage != NULL));
 }
 
 // 压制系统调度器：SB 内的 DBSDeviceAppearanceScheduleController 若经 set_styleMode: 下发切换，
@@ -502,6 +693,27 @@ static void H_DBSSetStyle(id self, SEL _cmd, id mode)
                                      CFSTR("com.apple.iokit.hid.displayStatus"), NULL,
                                      CFNotificationSuspensionBehaviorDeliverImmediately);
 
+    // 控制中心外观模块按需懒加载：仅关注 ControlCenter/Appearance 相关 bundle，挂齐后立刻移除监听
+    if (!HookControlCenterAppearance()) {
+        __block id ccObs = nil;
+        ccObs = [[NSNotificationCenter defaultCenter]
+            addObserverForName:NSBundleDidLoadNotification
+                        object:nil
+                         queue:nil
+                    usingBlock:^(NSNotification *note) {
+            NSBundle *b = [note.object isKindOfClass:[NSBundle class]] ? (NSBundle *)note.object : nil;
+            NSString *bp = b.bundlePath;
+            if (bp && [bp rangeOfString:@"ControlCenter"].location == NSNotFound &&
+                [bp rangeOfString:@"Appearance"].location == NSNotFound) {
+                return;
+            }
+            if (HookControlCenterAppearance() && ccObs) {
+                [[NSNotificationCenter defaultCenter] removeObserver:ccObs];
+                ccObs = nil;
+            }
+        }];
+    }
+
     // 监听系统低电量模式变化（queue:nil 避免额外持有 NSOperationQueue，主队列更新状态并收敛传感器）
     [[NSNotificationCenter defaultCenter] addObserverForName:NSProcessInfoPowerStateDidChangeNotification
                                                       object:nil
@@ -513,6 +725,14 @@ static void H_DBSSetStyle(id self, SEL _cmd, id mode)
             ReconcileSensor();
             PingFmt("sd-lpm?on=%d&pol=%d&iv=%d", gLowPowerMode, gLowPowerPolicy, EffectiveIntervalSec());
         });
+    }];
+
+    // 系统语言切换时清空控制中心文案缓存
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSCurrentLocaleDidChangeNotification
+                                                      object:nil
+                                                       queue:nil
+                                                  usingBlock:^(__unused NSNotification *note) {
+        dispatch_async(dispatch_get_main_queue(), ^{ InvalidateCCStringsCache(); });
     }];
 
     // 类可能不存在（iOS17 改名）：显式传类，缺了只跳过该 hook 不炸 %init
