@@ -18,7 +18,7 @@
 
 #pragma mark - DBSDeviceAppearanceScheduleController hooks（选项页）
 
-static IMP o_loadSpecs, o_schedSpecifiers, o_schedViewWillAppear, o_schedViewWillDisappear, o_didSelect, o_cellForRow;
+static IMP o_loadSpecs, o_schedSpecifiers, o_schedViewWillAppear, o_schedViewWillDisappear, o_didSelect, o_cellForRow, o_heightForRow, o_showScheduleSpecs;
 
 // 必须返回 NSMutableArray（DBSDeviceAppearanceScheduleController 随后会 addObjectsFromArray:）
 static id H_loadSpecs(id self, SEL _cmd, id name, id target)
@@ -77,18 +77,56 @@ static id H_loadSpecs(id self, SEL _cmd, id name, id target)
     }
 }
 
+static void EnsureSystemScheduleCollapsed(id controller)
+{
+    if (!controller) return;
+    if ([controller respondsToSelector:@selector(_showingScheduleSpecifiers)] &&
+        [controller respondsToSelector:@selector(showScheduleSpecifiers:animated:)]) {
+        BOOL showing = ((BOOL (*)(id, SEL))objc_msgSend)(controller, @selector(_showingScheduleSpecifiers));
+        if (showing) {
+            ((void (*)(id, SEL, BOOL, BOOL))objc_msgSend)(
+                controller, @selector(showScheduleSpecifiers:animated:), NO, NO);
+        }
+    }
+}
+
+static void H_showScheduleSpecs(id self, SEL _cmd, BOOL show, BOOL animated)
+{
+    if (show && ReadScheduleMode() == 3) {
+        show = NO;
+    }
+    ((void (*)(id, SEL, BOOL, BOOL))o_showScheduleSpecs)(self, _cmd, show, animated);
+}
+
 static NSArray *H_schedSpecifiers(id self, SEL _cmd)
 {
     NSArray *r = ((NSArray *(*)(id, SEL))o_schedSpecifiers)(self, _cmd);
     if (ReadScheduleMode() == 3) {
         id ours = nil, radioGroup = nil;
-        for (id sp in r) {
+        BOOL hasAmbient = NO;
+        NSUInteger oursIdx = NSNotFound;
+        for (NSUInteger i = 0; i < r.count; i++) {
+            id sp = r[i];
             NSString *ident = SpecIdent(sp);
-            if ([ident isEqualToString:kOurSpecID]) ours = sp;
-            else if ([ident isEqualToString:@"SCHEDULE_GROUP"]) radioGroup = sp;
+            if ([ident isEqualToString:kOurSpecID]) {
+                ours = sp;
+                oursIdx = i;
+            } else if ([ident isEqualToString:@"SCHEDULE_GROUP"]) {
+                radioGroup = sp;
+            } else if (IsAmbientConfigID(ident)) {
+                hasAmbient = YES;
+            }
         }
         if (radioGroup && ours) {
             SpecSetProperty(radioGroup, ours, kRadioCheckedKey);
+        }
+        // 系统在后台/外观变化后若重建了 _specifiers（reloadSpecifiers），直接把环境光配置组补回，防止退化为自定义时间段
+        if (!hasAmbient && oursIdx != NSNotFound && [r isKindOfClass:[NSMutableArray class]]) {
+            NSArray *ambient = BuildAmbientSpecifiers();
+            if (ambient.count) {
+                NSIndexSet *idxs = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(oursIdx + 1, ambient.count)];
+                [(NSMutableArray *)r insertObjects:ambient atIndexes:idxs];
+            }
         }
     }
     return r;
@@ -96,18 +134,21 @@ static NSArray *H_schedSpecifiers(id self, SEL _cmd)
 
 static void H_schedViewWillAppear(id self, SEL _cmd, BOOL animated)
 {
+    SDInvalidateLangCache();
     ((void (*)(id, SEL, BOOL))o_schedViewWillAppear)(self, _cmd, animated);
-    if (ReadScheduleMode() == 3) {
-        id ours = SpecForID(self, kOurSpecID);
-        SyncRadioGroupCheckedSpecifier(self, ours);
-        if ([self respondsToSelector:@selector(_showingScheduleSpecifiers)] &&
-            [self respondsToSelector:@selector(showScheduleSpecifiers:animated:)]) {
-            BOOL showing = ((BOOL (*)(id, SEL))objc_msgSend)(self, @selector(_showingScheduleSpecifiers));
-            if (showing) {
-                ((void (*)(id, SEL, BOOL, BOOL))objc_msgSend)(
-                    self, @selector(showScheduleSpecifiers:animated:), NO, NO);
-            }
+
+    // 若用户在独立设置页切换了语言再返回此处，同步刷新三语文案
+    id ours = SpecForID(self, kOurSpecID);
+    if (ours && [ours respondsToSelector:@selector(name)]) {
+        NSString *curName = ((id (*)(id, SEL))objc_msgSend)(ours, @selector(name));
+        if (![curName isEqualToString:SDTitleAmbient()]) {
+            RebuildAmbientPanelForLanguageChange(self);
         }
+    }
+
+    if (ReadScheduleMode() == 3) {
+        SyncRadioGroupCheckedSpecifier(self, ours);
+        EnsureSystemScheduleCollapsed(self);
         SetAmbientSpecifiersVisible(self, YES, NO);
     } else {
         SetAmbientSpecifiersVisible(self, NO, NO);
@@ -136,9 +177,11 @@ static UITableViewCell *H_cellForRow(id self, SEL _cmd, id tv, id ip)
     if (IsAmbientConfigID(ident)) {
         static IMP superImp;
         if (!superImp) superImp = SuperIMPFor(objc_getClass("DBSDeviceAppearanceScheduleController"), _cmd);
-        return superImp
+        UITableViewCell *cell = superImp
             ? ((UITableViewCell *(*)(id, SEL, id, id))superImp)(self, _cmd, tv, ip)
             : nil;
+        ConfigureAmbientCell(cell, sp);
+        return cell;
     }
 
     UITableViewCell *cell;
@@ -151,7 +194,9 @@ static UITableViewCell *H_cellForRow(id self, SEL _cmd, id tv, id ip)
             ? ((UITableViewCell *(*)(id, SEL, id, id))superImp)(self, _cmd, tv, ip)
             : nil;
     }
-    if (!cell || !IsRadioItemID(ident)) return cell;
+    if (!cell) return nil;
+    CleanupCustomAmbientViews(cell);
+    if (!IsRadioItemID(ident)) return cell;
 
     int mode = ReadScheduleMode();
     if (mode == 3) {
@@ -169,9 +214,10 @@ static void H_didSelect(id self, SEL _cmd, id tv, id ip)
     id sp = SpecAtIndexPath(self, ip);
     NSString *ident = SpecIdent(sp);
 
-    // 我们插入的滑块/开关行不透传给系统调度逻辑
+    // 我们插入的配置行不透传给系统调度逻辑，自行处理弹窗菜单点击
     if (IsAmbientConfigID(ident)) {
         [(UITableView *)tv deselectRowAtIndexPath:ip animated:YES];
+        HandleAmbientRowTap(self, (UITableView *)tv, ip, ident);
         return;
     }
 
@@ -220,6 +266,24 @@ static void H_didSelect(id self, SEL _cmd, id tv, id ip)
     }
 }
 
+static CGFloat H_heightForRow(id self, SEL _cmd, id tv, id ip)
+{
+    id sp = SpecAtIndexPath(self, ip);
+    if (IsAmbientConfigID(SpecIdent(sp))) {
+        CGFloat customH = HeightForAmbientSpecifier(sp);
+        if (customH > 0) return customH;
+    }
+    if (o_heightForRow) {
+        return ((CGFloat (*)(id, SEL, id, id))o_heightForRow)(self, _cmd, tv, ip);
+    }
+    static IMP superImp;
+    if (!superImp) superImp = SuperIMPFor(objc_getClass("DBSDeviceAppearanceScheduleController"), _cmd);
+    if (superImp) {
+        return ((CGFloat (*)(id, SEL, id, id))superImp)(self, _cmd, tv, ip);
+    }
+    return UITableViewAutomaticDimension;
+}
+
 static void HookScheduleController(void)
 {
     static int state;
@@ -244,9 +308,31 @@ static void HookScheduleController(void)
     else
         class_addMethod(c, @selector(tableView:cellForRowAtIndexPath:), (IMP)H_cellForRow, "@@:@@");
 
+    if (class_getInstanceMethod(c, @selector(tableView:heightForRowAtIndexPath:)))
+        MSHookMessageEx(c, @selector(tableView:heightForRowAtIndexPath:), (IMP)H_heightForRow, &o_heightForRow);
+    else
+        class_addMethod(c, @selector(tableView:heightForRowAtIndexPath:), (IMP)H_heightForRow, "d@:@@");
+
+    if (class_getInstanceMethod(c, @selector(showScheduleSpecifiers:animated:)))
+        MSHookMessageEx(c, @selector(showScheduleSpecifiers:animated:), (IMP)H_showScheduleSpecs, &o_showScheduleSpecs);
+
     Class psl = objc_getClass("PSListController");
     if (psl && class_getInstanceMethod(psl, @selector(loadSpecifiersFromPlistName:target:)))
         MSHookMessageEx(psl, @selector(loadSpecifiersFromPlistName:target:), (IMP)H_loadSpecs, &o_loadSpecs);
+
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillEnterForegroundNotification
+                                                      object:nil
+                                                       queue:nil
+                                                  usingBlock:^(__unused NSNotification *note) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            id ctrl = sLiveController;
+            if (!ctrl || ReadScheduleMode() != 3) return;
+            EnsureSystemScheduleCollapsed(ctrl);
+            SetAmbientSpecifiersVisible(ctrl, YES, NO);
+            PollSpringBoardLuxOnce();
+            RefreshLiveStatusCellsOnMain();
+        });
+    }];
 
     state = 1;
     PingFmt("st-sched-hooked?cell=%d&ls=%d", hasCell, o_loadSpecs != NULL);
@@ -318,6 +404,7 @@ static id H_schedStr(id self, SEL _cmd)
 // 进页刷新副标题（系统默认不重算已渲染的值）
 static void H_displayVWA(id self, SEL _cmd, BOOL animated)
 {
+    SDInvalidateLangCache();
     ((void (*)(id, SEL, BOOL))o_displayVWA)(self, _cmd, animated);
     if ([self respondsToSelector:@selector(_deviceAppearanceScheduleSpecifier)] &&
         [self respondsToSelector:@selector(reloadSpecifier:animated:)]) {
@@ -358,20 +445,20 @@ static void HookDisplayController(void)
     PingFmt("st-display-hooked?ss=%d&so=%d&go=%d", o_schedStr != NULL, setIsObj, getIsObj);
 }
 
-// 诊断探针：确认两个 DBS 控制器何时真出现在进程里（配合延迟 hook 重试）
+#if SD_DIAG
+// 诊断探针：仅调试模式开启，发布版零 UIViewController 拦截开销
 %hook UIViewController
 - (void)viewDidAppear:(BOOL)animated
 {
     %orig;
-#if SD_DIAG
     const char *cn = object_getClassName(self);
     if (cn && (strcmp(cn, "DBSSettingsController") == 0 ||
                strcmp(cn, "DBSDeviceAppearanceScheduleController") == 0)) {
         PingFmt("st-vc?c=%s&m=%d", cn, ReadScheduleMode());
     }
-#endif
 }
 %end
+#endif
 
 %ctor
 {
@@ -381,20 +468,30 @@ static void HookDisplayController(void)
     HookScheduleController();
     HookDisplayController();
 
-    // DBS 私有框架可能晚于 tweak 注入加载：每 1.5s 重试挂钩，两边都挂上即停（最长 ~5 分钟）
-    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-                                                     dispatch_get_global_queue(0, 0));
-    dispatch_source_set_timer(timer, DISPATCH_TIME_NOW,
-                              (uint64_t)(1.5 * NSEC_PER_SEC), (uint64_t)(0.3 * NSEC_PER_SEC));
-    __block int ticks = 0;
-    dispatch_source_set_event_handler(timer, ^{
-        HookScheduleController();
-        HookDisplayController();
-        if ((o_loadSpecs && o_schedStr) || ++ticks > 200) {
-            dispatch_source_cancel(timer);
-        }
-    });
-    dispatch_resume(timer);
+    // DBS 私有框架按需加载：仅关注 Display/Brightness 相关 bundle，挂齐后立刻移除监听
+    if (!o_loadSpecs || !o_schedStr) {
+        __block id bundleObs = nil;
+        bundleObs = [[NSNotificationCenter defaultCenter]
+            addObserverForName:NSBundleDidLoadNotification
+                        object:nil
+                         queue:nil
+                    usingBlock:^(NSNotification *note) {
+            NSBundle *b = [note.object isKindOfClass:[NSBundle class]] ? (NSBundle *)note.object : nil;
+            NSString *bp = b.bundlePath;
+            if (bp && [bp rangeOfString:@"Display"].location == NSNotFound &&
+                [bp rangeOfString:@"Brightness"].location == NSNotFound) {
+                return;
+            }
+            HookScheduleController();
+            HookDisplayController();
+            if (o_loadSpecs && o_schedStr && bundleObs) {
+                [[NSNotificationCenter defaultCenter] removeObserver:bundleObs];
+                bundleObs = nil;
+            }
+        }];
+    }
 
+#if SD_DIAG
     %init;
+#endif
 }

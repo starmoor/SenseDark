@@ -18,7 +18,7 @@ enum {
 
 #pragma mark - PSSpecifier 动态访问
 
-static NSString *SpecIdent(id sp)
+static inline NSString *SpecIdent(id sp)
 {
     if (!sp) return nil;
     if ([sp respondsToSelector:@selector(identifier)])
@@ -28,21 +28,21 @@ static NSString *SpecIdent(id sp)
     return nil;
 }
 
-static id SpecProp(id sp, NSString *key)
+static inline id SpecProp(id sp, NSString *key)
 {
     if (sp && [sp respondsToSelector:@selector(propertyForKey:)])
         return ((id (*)(id, SEL, id))objc_msgSend)(sp, @selector(propertyForKey:), key);
     return nil;
 }
 
-static long SpecCellType(id sp)
+static inline long SpecCellType(id sp)
 {
     if (sp && [sp respondsToSelector:@selector(cellType)])
         return ((long (*)(id, SEL))objc_msgSend)(sp, @selector(cellType));
     return kSDListItemCell;
 }
 
-static void SpecSetProperty(id sp, id value, NSString *key)
+static inline void SpecSetProperty(id sp, id value, NSString *key)
 {
     if (sp && [sp respondsToSelector:@selector(setProperty:forKey:)])
         ((void (*)(id, SEL, id, id))objc_msgSend)(sp, @selector(setProperty:forKey:), value, key);
@@ -50,28 +50,28 @@ static void SpecSetProperty(id sp, id value, NSString *key)
 
 #pragma mark - PSListController 动态查询
 
-static id SpecForID(id controller, NSString *ident)
+static inline id SpecForID(id controller, NSString *ident)
 {
     if (controller && [controller respondsToSelector:@selector(specifierForID:)])
         return ((id (*)(id, SEL, id))objc_msgSend)(controller, @selector(specifierForID:), ident);
     return nil;
 }
 
-static id SpecAtIndexPath(id controller, id indexPath)
+static inline id SpecAtIndexPath(id controller, id indexPath)
 {
     if (controller && indexPath && [controller respondsToSelector:@selector(specifierAtIndexPath:)])
         return ((id (*)(id, SEL, id))objc_msgSend)(controller, @selector(specifierAtIndexPath:), indexPath);
     return nil;
 }
 
-static NSIndexPath *IndexPathForSpec(id controller, id sp)
+static inline NSIndexPath *IndexPathForSpec(id controller, id sp)
 {
     if (controller && sp && [controller respondsToSelector:@selector(indexPathForSpecifier:)])
         return ((NSIndexPath *(*)(id, SEL, id))objc_msgSend)(controller, @selector(indexPathForSpecifier:), sp);
     return nil;
 }
 
-static NSInteger IndexOfSpec(id controller, id sp)
+static inline NSInteger IndexOfSpec(id controller, id sp)
 {
     if (controller && sp && [controller respondsToSelector:@selector(indexOfSpecifier:)])
         return ((NSInteger (*)(id, SEL, id))objc_msgSend)(controller, @selector(indexOfSpecifier:), sp);
@@ -82,7 +82,7 @@ static NSInteger IndexOfSpec(id controller, id sp)
 
 // 沿继承链找 sel 的实现（绕过被 hook 的本类，直达父类——环境光 cell 交给
 // PSListController 父类渲染，避开 DBS 子类对时间 picker 的 override）
-static IMP SuperIMPFor(Class c, SEL sel)
+static inline IMP SuperIMPFor(Class c, SEL sel)
 {
     for (Class s = class_getSuperclass(c); s; s = class_getSuperclass(s)) {
         Method m = class_getInstanceMethod(s, sel);
@@ -92,7 +92,7 @@ static IMP SuperIMPFor(Class c, SEL sel)
 }
 
 // 私有类方法签名在不同 iOS 上 id/BOOL 漂移，按运行时 type encoding 选对应 IMP 形态
-static BOOL ArgTypeIsObject(Method m, unsigned int idx)
+static inline BOOL ArgTypeIsObject(Method m, unsigned int idx)
 {
     if (!m) return YES;
     char buf[32] = {0};
@@ -100,7 +100,7 @@ static BOOL ArgTypeIsObject(Method m, unsigned int idx)
     return buf[0] == '@';
 }
 
-static BOOL ReturnTypeIsObject(Method m)
+static inline BOOL ReturnTypeIsObject(Method m)
 {
     if (!m) return YES;
     char buf[32] = {0};
