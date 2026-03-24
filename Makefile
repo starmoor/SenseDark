@@ -6,13 +6,13 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = SenseDark SenseDarkSettings
 SenseDark_FILES = Tweak.x
-SenseDark_CFLAGS = -fobjc-arc
+SenseDark_CFLAGS = -fobjc-arc -Os
 SenseDarkSettings_FILES = SenseDarkSettings.x
-SenseDarkSettings_CFLAGS = -fobjc-arc
+SenseDarkSettings_CFLAGS = -fobjc-arc -Os
 
 BUNDLE_NAME = SenseDarkPrefs
 SenseDarkPrefs_FILES = SenseDarkPrefs.m
-SenseDarkPrefs_CFLAGS = -fobjc-arc
+SenseDarkPrefs_CFLAGS = -fobjc-arc -Os
 SenseDarkPrefs_INSTALL_PATH = /Library/PreferenceBundles
 SenseDarkPrefs_PRIVATE_FRAMEWORKS = Preferences
 

@@ -15,7 +15,7 @@
 #define SD_DIAG 0
 #endif
 
-#define SD_VERSION "0.1.0-39"
+#define SD_VERSION "0.1.0-40"
 
 #if SD_DIAG
 
