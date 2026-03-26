@@ -5,7 +5,7 @@ THEOS_PACKAGE_SCHEME ?= roothide
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = SenseDark SenseDarkSettings
-SenseDark_FILES = Tweak.x
+SenseDark_FILES = Tweak.x SDUpdateCheck.m
 SenseDark_CFLAGS = -fobjc-arc -Os
 SenseDarkSettings_FILES = SenseDarkSettings.x
 SenseDarkSettings_CFLAGS = -fobjc-arc -Os

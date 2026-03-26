@@ -25,6 +25,7 @@
 #include "SDLog.h"
 #include "SDCommon.h"
 #include "SDALSClient.h"
+#include "SDUpdateCheck.h"
 
 #pragma mark - 状态
 
@@ -769,6 +770,7 @@ static void H_DBSSetStyle(id self, SEL _cmd, id mode)
 
     ReconcileSensor();
     ReloadPrefsLiveAsync(YES);
+    SDUpdateCheckStart();
 }
 
 %dtor { SDALSDestroy(); }

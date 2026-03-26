@@ -15,6 +15,24 @@
 #define SD_DEBUG_DOMAIN       SD_PREFS_DOMAIN ".debug"              // 诊断日志域（SDLog.h 写）
 #define SD_GITHUB_URL         "https://github.com/starmoor/SenseDark"
 
+// 版本号比较（"0.1.0-41" 风格）：按非数字分段逐段比大小，段缺按 0。
+// 本项目版本全数字段，够用；需在 Foundation 之后 include。
+static inline int SDVersionCompare(NSString *a, NSString *b)
+{
+    if (a.length == 0) return b.length ? -1 : 0;
+    if (b.length == 0) return 1;
+    NSCharacterSet *nonDigit = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
+    NSArray<NSString *> *sa = [a componentsSeparatedByCharactersInSet:nonDigit];
+    NSArray<NSString *> *sb = [b componentsSeparatedByCharactersInSet:nonDigit];
+    NSUInteger n = sa.count > sb.count ? sa.count : sb.count;
+    for (NSUInteger i = 0; i < n; i++) {
+        long long va = i < sa.count ? [sa[i] longLongValue] : 0;
+        long long vb = i < sb.count ? [sb[i] longLongValue] : 0;
+        if (va != vb) return va < vb ? -1 : 1;
+    }
+    return 0;
+}
+
 // SD_NOTE_STATE 位掩码
 #define SDSTATE_PAUSED_MANUAL (1ULL << 0) // 手动切换暂停中
 #define SDSTATE_PAUSED_LP     (1ULL << 1) // 低电量暂停中
