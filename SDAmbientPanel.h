@@ -367,6 +367,20 @@ static id sLowPowerObserver = nil;
 static int sLuxNotifyToken = -1;
 static int sStateNotifyToken = -1;
 
+static id MakeResetButtonSpecifier(void)
+{
+    Class specCls = objc_getClass("PSSpecifier");
+    if (!specCls) return nil;
+    id sp = ((id (*)(Class, SEL, id, id, SEL, SEL, Class, long, BOOL))objc_msgSend)(
+        specCls,
+        @selector(preferenceSpecifierNamed:target:set:get:detail:cell:edit:),
+        SDLoc(@"恢复默认参数", @"Restore Defaults", @"Сбросить параметры"),
+        nil, NULL, NULL, Nil, 13, NO);
+    if (!sp) return nil;
+    SpecSetProperty(sp, @"SD_AMB_RESET", @"id");
+    return sp;
+}
+
 static void SyncResumeButtonRow(id controller, BOOL show, BOOL animated);
 static void RefreshHysteresisBarVisual(id ctrl, double downLux, double upLux);
 static double CurrentLiveUpLux(id ctrl);
@@ -1080,6 +1094,10 @@ static NSArray *BuildAmbientSpecifiers(void)
         @SDKEY_PAUSE,
         SDDEF_PAUSE));
 
+    // 组 4：恢复默认参数
+    add(MakeGroupSpecifier(@"SD_AMB_GRP_RESET", @"", nil));
+    add(MakeResetButtonSpecifier());
+
     return arr;
 }
 
@@ -1183,6 +1201,32 @@ static void HandleAmbientRowTap(id controller, UITableView *tv, NSIndexPath *ip,
                                              NULL, NULL, TRUE);
         sPausedByManual = NO;
         RefreshLiveStatusCellsOnMain();
+        return;
+    }
+
+    if ([ident isEqualToString:@"SD_AMB_RESET"]) {
+        UIAlertController *ask = [UIAlertController
+            alertControllerWithTitle:SDLoc(@"恢复默认参数", @"Restore Defaults", @"Сбросить параметры")
+                             message:SDLoc(@"阈值、延迟、采样间隔、低电量策略与手动暂停将恢复为默认值（语言设置不变）。",
+                                           @"Thresholds, delay, interval, Low Power policy and manual pause will be reset (language is kept).",
+                                           @"Пороги, задержка, интервал, режим экономии и пауза будут сброшены (язык не меняется).")
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [ask addAction:[UIAlertAction actionWithTitle:SDLoc(@"取消", @"Cancel", @"Отмена")
+                                                style:UIAlertActionStyleCancel handler:nil]];
+        [ask addAction:[UIAlertAction actionWithTitle:SDLoc(@"恢复", @"Restore", @"Сбросить")
+                                                style:UIAlertActionStyleDestructive
+                                              handler:^(__unused UIAlertAction *action) {
+            WriteKey(@SDKEY_UP, @(SDDEF_UP));
+            WriteKey(@SDKEY_DOWN, @(SDDEF_DOWN));
+            WriteKey(@SDKEY_DELAY, @(SDDEF_DELAY));
+            WriteKey(@SDKEY_INTERVAL, @(SDDEF_INTERVAL));
+            WriteKey(@SDKEY_PAUSE, @(SDDEF_PAUSE));
+            WriteKey(@SDKEY_LP_POLICY, @(SDDEF_LP_POLICY));
+            WriteKey(@SDKEY_LP_INTERVAL, @(SDDEF_LP_INTERVAL));
+            PostPrefsChanged();
+            RebuildAmbientPanelForLanguageChange(controller);
+        }]];
+        [vc presentViewController:ask animated:YES completion:nil];
         return;
     }
 

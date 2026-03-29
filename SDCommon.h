@@ -76,5 +76,5 @@ static inline int SDVersionCompare(NSString *a, NSString *b)
 #define SDDEF_INTERVAL    3
 #define SDDEF_DELAY       2
 #define SDDEF_PAUSE       1
-#define SDDEF_LP_POLICY   SDLP_SLOW
+#define SDDEF_LP_POLICY   SDLP_KEEP
 #define SDDEF_LP_INTERVAL 30
